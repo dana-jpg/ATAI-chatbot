@@ -33,6 +33,7 @@ class Agent:
 
     def execute_sparql_query(self, query):
         try:
+            print(f"Executing SPARQL query:\n{query}")  # Debugging: print the query being executed
             results = g.query(query)  # Execute the SPARQL query on the graph
             response = ""
             # Iterate through the results and build the response
@@ -40,6 +41,7 @@ class Agent:
                 response += " | ".join([str(item) for item in row]) + "\n"
             return response or "No results found."
         except Exception as e:
+            print(f"Error executing query: {e}")  # Print the error to debug what's going wrong
             return f"Error executing query: {str(e)}"
 
     def listen(self):
@@ -53,22 +55,12 @@ class Agent:
                     room.initiated = True
                 # Retrieve messages from this chat room.
                 for message in room.get_messages(only_partner=True, only_new=True):
-                    print(
-                        f"\t- Chatroom {room.room_id} "
-                        f"- new message #{message.ordinal}: '{message.message}' "
-                        f"- {self.get_time()}")
+                    print(f"Received message: {message.message}")  # Log the received message for debugging
 
-                    # Check if the message is a SPARQL query
-                    if message.message.strip().lower().startswith("sparql"):
-                        # Extract the SPARQL query from the message
-                        sparql_query = message.message.replace("sparql", "", 1).strip()
-                        # Execute the query on the graph
-                        result = self.execute_sparql_query(sparql_query)
-                        # Post the SPARQL query result to the room
-                        room.post_messages(f"SPARQL Result:\n{result}")
-                    else:
-                        # Echo the non-SPARQL message back
-                        room.post_messages(f"Received your message: '{message.message}' ")
+                    # Execute the query on the graph directly, assuming the input is a valid SPARQL query
+                    result = self.execute_sparql_query(message.message)
+                    # Post the SPARQL query result to the room
+                    room.post_messages(f"SPARQL Result:\n{result}")
 
                     # Mark the message as processed
                     room.mark_as_processed(message)

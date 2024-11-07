@@ -1,77 +1,86 @@
-import sys
-sys.path.append('/opt/homebrew/anaconda3/lib/python3.11/site-packages')
 
-from speakeasypy import Speakeasy, Chatroom
+import csv
+import json
+import sys
+from datetime import datetime
+import os
+print("sys.path")
+print(sys.path)
+sys.path.append('/Users/ninar/opt/anaconda3/envs/speakeasy-env/lib/python3.9/site-packages')
+sys.path.append('/Users/ninar/Downloads/serene-ocean/speakeasypy/src')
+sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '..', 'speakeasypy', 'src')))
+import rdflib
+import spacy
+
+import random
+
+from speakeasypy.src.speakeasy import Speakeasy
+from speakeasypy.src.chatroom import Chatroom
+from speakeasypy.src.question_processor import Question_processor
+
+
 from typing import List
 import time
-from rdflib import Graph, Namespace
-from rdflib.namespace import RDF
+from transformers import pipeline
+import numpy as np
+import pandas as pd
+
 
 DEFAULT_HOST_URL = 'https://speakeasy.ifi.uzh.ch'
 listen_freq = 2
 
-# Define a namespace for your knowledge graph
-EX = Namespace("http://example.org/")
+BASE_PATH = os.path.abspath(os.path.join(os.path.dirname(__file__), '..'))
 
-# Load the RDF knowledge graph using N-Triples format
-print("Loading RDF knowledge graph...")
-g = Graph()
-try:
-    g.parse(source="../14_graph.nt", format="turtle")  # Replace with actual file and format
-    print("Knowledge graph loaded successfully.")
-except Exception as e:
-    print(f"Failed to load the knowledge graph: {e}")
-    exit(1)
-
+#print(BASE_PATH)
 
 class Agent:
     def __init__(self, username, password):
         self.username = username
-        # Initialize the Speakeasy Python framework and login.
         self.speakeasy = Speakeasy(host=DEFAULT_HOST_URL, username=username, password=password)
-        self.speakeasy.login()  # This framework will help you log out automatically when the program terminates.
+        self.speakeasy.login()
 
     def execute_sparql_query(self, query):
         try:
-            print(f"Executing SPARQL query:\n{query}")  # Debugging: print the query being executed
-            results = g.query(query)  # Execute the SPARQL query on the graph
-            response = ""
-            # Iterate through the results and build the response
-            for row in results:
-                response += " | ".join([str(item) for item in row]) + "\n"
-            return response or "No results found."
+            response = [str(s) for s, in self.graph.query(query)]
+            if response:
+                res = f"The answer to your question is {response[0]}"
+                res = res.encode('ascii', 'xmlcharrefreplace')
+                # answer_template = "Hi, the {} of {} is {}".format(relation, entity, answer)
+                return res.decode('ascii')
+            else:
+                return "No answer found for your question."
         except Exception as e:
-            print(f"Error executing query: {e}")  # Print the error to debug what's going wrong
-            return f"Error executing query: {str(e)}"
+            print(e)
+            return str(e)
+        
+    def answer_question(self, natural_query):
+        if "SELECT" in natural_query.message.upper():
+            response = self.execute_sparql_query(natural_query.message)
+        else:
+            if len(ner_pipeline(natural_query.message, aggregation_strategy="simple")) > 0:
+                response = cqp.get_nlp_answers(natural_query.message)
+            else:
+                response = "Sorry, did not find any matches for your query. Could you please rephrase and try again!"
+        return response
+
 
     def listen(self):
         while True:
-            # only check active chatrooms (i.e., remaining_time > 0) if active=True.
             rooms: List[Chatroom] = self.speakeasy.get_rooms(active=True)
             for room in rooms:
                 if not room.initiated:
-                    # send a welcome message if room is not initiated
-                    room.post_messages(f'Hello! This is a welcome message from {room.my_alias}.')
+                    room.post_messages('Hello! This is a welcome message from {room.my_alias}. How can I help you?')
                     room.initiated = True
-                # Retrieve messages from this chat room.
+                
                 for message in room.get_messages(only_partner=True, only_new=True):
-                    print(f"Received message: {message.message}")  # Log the received message for debugging
+                    print(f"Received message: {message.message}")
 
-                    # Execute the query on the graph directly, assuming the input is a valid SPARQL query
-                    result = self.execute_sparql_query(message.message)
-                    # Post the SPARQL query result to the room
-                    room.post_messages(f"SPARQL Result:\n{result}")
-
-                    # Mark the message as processed
+                    response = self.answer_question(message)
+                    room.post_messages(f"'{response}'")
                     room.mark_as_processed(message)
-
-                # Retrieve reactions from this chat room.
+            
                 for reaction in room.get_reactions(only_new=True):
-                    print(
-                        f"\t- Chatroom {room.room_id} "
-                        f"- new reaction #{reaction.message_ordinal}: '{reaction.type}' "
-                        f"- {self.get_time()}")
-
+                    print(f"\t- Chatroom {room.room_id} - new reaction #{reaction.message_ordinal}: '{reaction.type}' - {self.get_time()}")
                     room.post_messages(f"Received your reaction: '{reaction.type}' ")
                     room.mark_as_processed(reaction)
 
@@ -83,5 +92,34 @@ class Agent:
 
 
 if __name__ == '__main__':
+    g = rdflib.Graph()
+    g.parse(os.path.join(BASE_PATH, 'data', '14_graph.nt'), format='turtle')
+    RDFS = rdflib.namespace.RDFS
+    print("Knowledge graph loaded successfully.")
+
+    ner_pipeline = pipeline('ner', model='planeB/roberta_movie_w_title')
+    entity_emb = np.load(os.path.join(BASE_PATH, 'data', 'entity_embeds.npy'))
+    relation_emb = np.load(os.path.join(BASE_PATH, 'data', 'relation_embeds.npy'))
+    spacy_nlp = spacy.load("en_core_web_sm")
+
+    # Load entity_ids.del and create ent2id and id2ent
+    with open(os.path.join(BASE_PATH, 'data', 'entity_ids.del'), 'r') as ifile:
+        ent2id = {rdflib.term.URIRef(ent): int(idx) for idx, ent in csv.reader(ifile, delimiter='\t')}
+        id2ent = {v: k for k, v in ent2id.items()}
+
+    # Load relation_ids.del and create rel2id and id2rel
+    with open(os.path.join(BASE_PATH, 'data', 'relation_ids.del'), 'r') as ifile:
+        rel2id = {rdflib.term.URIRef(rel): int(idx) for idx, rel in csv.reader(ifile, delimiter='\t')}
+        id2rel = {v: k for k, v in rel2id.items()}
+
+    ent2lbl = {ent: str(lbl) for ent, lbl in g.subject_objects(RDFS.label)}
+    lbl2ent = {lbl: ent for ent, lbl in ent2lbl.items()}
+
+    # Pass all data to Question_processor
+    cqp = Question_processor(g, ner_pipeline, spacy_nlp, entity_emb, relation_emb,
+                             ent2id, id2ent, rel2id, id2rel, ent2lbl, lbl2ent)
+
+
     demo_bot = Agent("serene-ocean", "C7qlH0L2")
     demo_bot.listen()
+
